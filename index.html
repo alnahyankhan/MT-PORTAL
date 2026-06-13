@@ -8,17 +8,19 @@
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Load React and ReactDOM -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Load React and ReactDOM (Switched to cdnjs to prevent loading/crossorigin race conditions) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
     
     <!-- Load Vanilla Lucide Icons -->
     <script src="https://unpkg.com/lucide@0.292.0"></script>
     
     <!-- Load Babel to compile JSX in the browser -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.6/babel.min.js"></script>
     
     <style>
+        /* The color-scheme: dark rule ensures native HTML5 Date inputs show their calendar icons properly */
+        :root { color-scheme: dark; }
         body { background-color: #020617; } /* slate-950 */
     </style>
 </head>
@@ -94,8 +96,14 @@
             minimumFractionDigits: 2,
           }).format(amount || 0);
         };
+        
+        // Force dd/mm/yyyy visual layout for all tables & charts
+        const formatDisplayDate = (dateStr) => {
+          if (!dateStr || dateStr.length !== 10) return dateStr;
+          const [y, m, d] = dateStr.split('-');
+          return `${d}/${m}/${y}`;
+        };
 
-        const TURF_START_DATE = '2025-11-19';
         const getTodayString = () => {
            const dObj = new Date();
            const year = dObj.getFullYear();
@@ -104,7 +112,8 @@
            return `${year}-${month}-${day}`;
         };
         const TODAY_DATE = getTodayString();
-        const defaultFilters = { startDate: TURF_START_DATE, endDate: TODAY_DATE, dayOfWeek: 'All' };
+        // Use an empty startDate to include ALL historical data up to today by default
+        const defaultFilters = { startDate: '', endDate: TODAY_DATE, dayOfWeek: 'All' };
 
         // --- FALLBACK MOCK DATA FOR SIMULATION OVERRIDE ---
         const mockBookings = [
@@ -382,7 +391,7 @@
                       <div key={day.date} className="flex flex-col justify-end items-center h-full group min-w-[34px] flex-1 px-0.5">
                         <div className="flex items-end w-full gap-0.5 h-full relative justify-center">
                           <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col bg-slate-800 border border-slate-600 text-white text-xs p-3 rounded-lg shadow-lg z-20 w-44 pointer-events-none">
-                            <span className="font-bold border-b border-slate-600 pb-1 mb-1 text-white">{day.date}</span>
+                            <span className="font-bold border-b border-slate-600 pb-1 mb-1 text-white">{formatDisplayDate(day.date)}</span>
                             <span className="text-emerald-400 font-medium">Revenue: {formatCurrency(day.income)}</span>
                             <span className="text-red-400 font-medium">Expense: {formatCurrency(day.expense)}</span>
                             <span className="text-blue-400 font-medium">Asset: {formatCurrency(day.inventory)}</span>
@@ -394,7 +403,7 @@
                         <div className="h-8 mt-2 relative w-full">
                           {showLabel && (
                             <span className="absolute left-1/2 -translate-x-1/2 text-[10px] font-bold text-slate-400 whitespace-nowrap transform -rotate-45 origin-top-left">
-                              {day.date.substring(5)}
+                              {formatDisplayDate(day.date).substring(0, 5)}
                             </span>
                           )}
                         </div>
@@ -464,7 +473,8 @@
             if (isNaN(dObj.getTime())) return '';
             
             const year = dObj.getFullYear();
-            if (year < 2025) return ''; 
+            // Accept all historical data (fixes bug where older years were dropped)
+            if (year < 2000) return ''; 
 
             const month = String(dObj.getMonth() + 1).padStart(2, '0');
             const day = String(dObj.getDate()).padStart(2, '0');
@@ -480,9 +490,10 @@
 
           const safeNumber = (val) => {
             if (val === undefined || val === null || val === '') return 0;
-            if (typeof val === 'number') return val;
+            // Force absolute value so expenses entered as negative don't get double-added
+            if (typeof val === 'number') return Math.abs(val);
             const parsed = parseFloat(String(val).replace(/[^0-9.-]+/g, ""));
-            return isNaN(parsed) ? 0 : parsed;
+            return isNaN(parsed) ? 0 : Math.abs(parsed);
           };
 
           const pickFirst = (row, keys) => {
@@ -620,7 +631,7 @@
           const filteredData = useMemo(() => {
             const apply = (data) => {
               return data.filter(item => {
-                if (!item.date || item.date.length !== 10 || item.date < TURF_START_DATE) return false; 
+                if (!item.date || item.date.length !== 10) return false; 
                 let isValid = true;
                 if (appliedFilters.startDate && item.date < appliedFilters.startDate) isValid = false;
                 if (appliedFilters.endDate && item.date > appliedFilters.endDate) isValid = false;
@@ -640,7 +651,6 @@
             const beforeStart = (data) => data.filter(d => 
               d.date && 
               d.date.length === 10 && 
-              d.date >= TURF_START_DATE && 
               d.date < appliedFilters.startDate
             );
             const rev = beforeStart(bookings).reduce((sum, b) => sum + b.amount, 0);
@@ -660,8 +670,11 @@
             const maxDate = allDates.length > 0 ? allDates[allDates.length - 1] : 'N/A';
 
             const uniqueBookingDays = new Set(filteredData.bookings.map(b => b.date)).size;
-            const netProfit = totalRevenue - totalExpenses - totalAsset;
-            const currentBalance = prevBalance + totalRevenue - totalExpenses - totalAsset;
+            
+            // Correct Accounting: Assets do NOT reduce Net Profit, they only reduce Cash (Treasury)
+            const netProfit = totalRevenue - totalExpenses;
+            const netCashFlow = netProfit - totalAsset;
+            const currentBalance = prevBalance + netCashFlow;
 
             return {
               startDate: appliedFilters.startDate || minDate,
@@ -673,6 +686,7 @@
               prevBalance, 
               currentBalance,
               netProfit,
+              netCashFlow,
               avgMatchPerDay: uniqueBookingDays ? (totalMatches / uniqueBookingDays).toFixed(2) : 0,
               avgRevPerDay: uniqueBookingDays ? (totalRevenue / uniqueBookingDays).toFixed(2) : 0,
               pctAsset: totalRevenue ? ((totalAsset / totalRevenue) * 100).toFixed(2) : 0,
@@ -730,7 +744,6 @@
                   revenue: 0,
                   expenses: 0,
                   inventory: 0,
-                  netProfit: 0,
                   matches: 0
                 };
               }
@@ -756,10 +769,29 @@
               row.inventory += i.amount;
             });
 
-            return Object.values(monthlyMap)
-              .map((row) => ({ ...row, netProfit: row.revenue - row.expenses - row.inventory, sales: row.revenue }))
-              .sort((a, b) => a.month.localeCompare(b.month));
-          }, [filteredData]);
+            const sortedMonths = Object.values(monthlyMap).sort((a, b) => a.month.localeCompare(b.month));
+
+            // Run a rolling calculation through the months for the chart
+            let currentRollingBalance = prevBalance;
+
+            return sortedMonths.map((row) => {
+              const netProfit = row.revenue - row.expenses;
+              const netCashFlow = netProfit - row.inventory;
+              const openingBalance = currentRollingBalance;
+              const closingBalance = openingBalance + netCashFlow;
+              
+              currentRollingBalance = closingBalance;
+
+              return {
+                ...row,
+                netProfit,
+                netCashFlow,
+                openingBalance,
+                closingBalance,
+                sales: row.revenue
+              };
+            });
+          }, [filteredData, prevBalance]);
 
           const monthlySalesData = useMemo(() => {
             const maxSales = Math.max(0, ...monthlyFinancialData.map((row) => row.sales));
@@ -1082,12 +1114,13 @@
                             <DonutChart data={financialSplitData} valueFormatter={formatCurrency} />
                           </ChartShell>
 
-                          <ChartShell title="Net Profit vs Revenue" subtitle="Monthly revenue compared with net profit.">
+                          <ChartShell title="Monthly Treasury Growth" subtitle="Revenue, Net Profit, and End-of-Month Closing Balance.">
                             <VerticalBarChart
                               data={monthlyFinancialData}
                               series={[
                                 { key: 'revenue', label: 'Revenue', dotClass: 'bg-emerald-500', textClass: 'text-emerald-400', barClass: 'bg-emerald-500' },
-                                { key: 'netProfit', label: 'Net Profit', dotClass: 'bg-white', textClass: 'text-slate-200', barClass: 'bg-slate-300' }
+                                { key: 'netProfit', label: 'Net Profit', dotClass: 'bg-white', textClass: 'text-slate-200', barClass: 'bg-slate-300' },
+                                { key: 'closingBalance', label: 'Closing Balance', dotClass: 'bg-blue-400', textClass: 'text-blue-300', barClass: 'bg-blue-500' }
                               ]}
                               valueFormatter={formatCurrency}
                             />
@@ -1147,22 +1180,29 @@
                         <div className="bg-slate-800 p-5 border-b border-slate-700 flex justify-between items-center">
                           <h3 className="font-black text-white uppercase tracking-widest text-lg flex items-center gap-2">
                             {FileText && <FileText className="text-emerald-500" />}
-                            Income Statement
+                            Financial Summary
                           </h3>
                         </div>
                         <div className="p-5 flex-1">
                           <table className="w-full text-left border-collapse border border-slate-700">
                             <tbody className="divide-y divide-slate-700">
-                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 w-12 text-center">1</td><td className="p-4 text-sm font-bold text-slate-300">Start Date</td><td className="p-4 text-sm font-bold text-slate-300 text-right font-mono">{stats.startDate}</td></tr>
-                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">2</td><td className="p-4 text-sm font-bold text-slate-300">End Date</td><td className="p-4 text-sm font-bold text-slate-300 text-right font-mono">{stats.endDate}</td></tr>
+                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 w-12 text-center">1</td><td className="p-4 text-sm font-bold text-slate-300">Start Date</td><td className="p-4 text-sm font-bold text-slate-300 text-right font-mono">{formatDisplayDate(stats.startDate)}</td></tr>
+                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">2</td><td className="p-4 text-sm font-bold text-slate-300">End Date</td><td className="p-4 text-sm font-bold text-slate-300 text-right font-mono">{formatDisplayDate(stats.endDate)}</td></tr>
                               <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">3</td><td className="p-4 text-sm font-bold text-slate-300">Total Number of Matches</td><td className="p-4 text-sm font-bold text-slate-300 text-right text-white">{stats.totalMatches}</td></tr>
                               <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">4</td><td className="p-4 text-sm font-bold text-slate-300">Total Revenue</td><td className="p-4 text-sm font-black text-slate-300 text-right text-emerald-400">{formatCurrency(stats.totalRevenue)}</td></tr>
                               <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">5</td><td className="p-4 text-sm font-bold text-slate-300">Total Expenses</td><td className="p-4 text-sm font-black text-slate-300 text-right text-red-400">{formatCurrency(stats.totalExpenses)}</td></tr>
-                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">6</td><td className="p-4 text-sm font-bold text-slate-300">Asset / Inventory (Purchase)</td><td className="p-4 text-sm font-black text-slate-300 text-right text-blue-400">{formatCurrency(stats.totalAsset)}</td></tr>
-                              <tr className="hover:bg-slate-800/50 transition-colors bg-slate-800/20">
-                                <td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/50 text-center">7</td>
-                                <td className="p-4 text-sm font-black text-white">Net Profit</td>
+                              <tr className="hover:bg-slate-800/50 transition-colors bg-slate-800/40">
+                                <td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/50 text-center">6</td>
+                                <td className="p-4 text-sm font-black text-white">Net Profit <span className="font-normal text-slate-400 text-xs ml-1">(Revenue - Expenses)</span></td>
                                 <td className={`p-4 text-base font-black text-right ${stats.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{formatCurrency(stats.netProfit)}</td>
+                              </tr>
+                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">7</td><td className="p-4 text-sm font-bold text-slate-300">Asset / Inventory (Purchase)</td><td className="p-4 text-sm font-black text-slate-300 text-right text-blue-400">{formatCurrency(stats.totalAsset)}</td></tr>
+                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">8</td><td className="p-4 text-sm font-bold text-slate-300">Period Net Cash Flow <span className="font-medium text-slate-500 text-xs ml-1">(Profit - Assets)</span></td><td className={`p-4 text-sm font-black text-right ${stats.netCashFlow >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{formatCurrency(stats.netCashFlow)}</td></tr>
+                              <tr className="hover:bg-slate-800/50 transition-colors"><td className="p-4 text-sm font-bold text-slate-400 bg-slate-800/30 text-center">9</td><td className="p-4 text-sm font-bold text-slate-300">Opening Treasury Balance <span className="font-medium text-slate-500 text-xs ml-1">(Rollover)</span></td><td className="p-4 text-sm font-black text-slate-300 text-right text-slate-400">{formatCurrency(stats.prevBalance)}</td></tr>
+                              <tr className="hover:bg-slate-800/50 transition-colors bg-emerald-900/20 border-t-2 border-emerald-500/50">
+                                <td className="p-4 text-sm font-bold text-emerald-500 bg-emerald-900/30 text-center">10</td>
+                                <td className="p-4 text-sm font-black text-emerald-400">Closing Treasury Balance <span className="font-bold text-emerald-500/70 text-xs ml-1">(Opening + Cash Flow)</span></td>
+                                <td className="p-4 text-lg font-black text-right text-emerald-400 drop-shadow-md">{formatCurrency(stats.currentBalance)}</td>
                               </tr>
                             </tbody>
                           </table>
@@ -1250,7 +1290,7 @@
                             <tbody className="divide-y divide-slate-800/50 text-sm">
                               {filteredData.bookings.length > 0 ? filteredData.bookings.map((row) => (
                                 <tr key={row.id} className="hover:bg-slate-800/30 transition-colors">
-                                  <td className="p-4 font-bold text-white">{row.date}</td><td className="p-4 font-medium text-slate-400">{row.day}</td><td className="p-4 text-center font-bold text-slate-300">{row.matches}</td><td className="p-4 text-right text-emerald-400 font-black">{formatCurrency(row.amount)}</td>
+                                  <td className="p-4 font-bold text-white">{formatDisplayDate(row.date)}</td><td className="p-4 font-medium text-slate-400">{row.day}</td><td className="p-4 text-center font-bold text-slate-300">{row.matches}</td><td className="p-4 text-right text-emerald-400 font-black">{formatCurrency(row.amount)}</td>
                                 </tr>
                               )) : <tr><td colSpan="4" className="p-6 text-center text-slate-500 font-medium">No data found</td></tr>}
                             </tbody>
